@@ -1,0 +1,77 @@
+name: Deploy Frontend to EC2 (Stage)
+
+on:
+  push:
+    branches:
+      - stage  # Only trigger on commits to the 'stage' branch
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Checkout the repository code
+      - name: Checkout code
+        uses: actions/checkout@v2
+        with:
+          ref: stage
+
+      # Set up Docker
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v1
+
+      # Configure AWS credentials (using secrets stored in GitHub Secrets)
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }} # Add this secret in GitHub
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }} # Add this secret in GitHub
+          aws-region: ap-south-1  # Set the AWS region to Mumbai (or your region)
+
+      # Log into AWS ECR using GitHub Secrets (AWS credentials)
+      - name: Log in to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # Build Docker image for the frontend
+      - name: Build Docker image for frontend
+        run: |
+          IMAGE_NAME="stage/cryptomyners-frontend"
+          VERSION_TAG="${GITHUB_SHA}"  # You can change this to any versioning scheme you prefer
+
+          docker build -t $IMAGE_NAME:$VERSION_TAG .
+
+      # Push the image to ECR
+      - name: Push Docker image to Amazon ECR
+        run: |
+          # Define the ECR repository
+          IMAGE_NAME="stage/cryptomyners-frontend"
+          VERSION_TAG="${GITHUB_SHA}"
+          AWS_ACCOUNT_ID=${{ secrets.AWS_ACCOUNT_ID }}
+
+          # Tag the image
+          docker tag $IMAGE_NAME:$VERSION_TAG $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$IMAGE_NAME:$VERSION_TAG
+          docker tag $IMAGE_NAME:$VERSION_TAG $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$IMAGE_NAME:latest
+
+          # Push the image to ECR
+          docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$IMAGE_NAME:$VERSION_TAG
+          docker push $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com/$IMAGE_NAME:latest
+
+      # Set up SSH to EC2 instance and trigger Docker Compose
+      - name: Deploy to EC2 instance and restart docker-compose
+        run: |
+          echo "$EC2_SSH_KEY" > ssh_key.pem
+          chmod 600 ssh_key.pem
+          ssh -o StrictHostKeyChecking=no -i ssh_key.pem ${EC2_USER}@${EC2_HOST} << 'EOF'
+            sudo su
+            aws ecr get-login-password --region ap-south-1 | docker login --username AWS --password-stdin 774305576936.dkr.ecr.ap-south-1.amazonaws.com
+            cd crypto-stage-compose
+            docker compose pull frontend
+            docker compose down
+            docker compose up -d
+          EOF
+        env:
+          EC2_USER: ${{ secrets.EC2_USER }}
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}  # SSH key for EC2 access
+          EC2_HOST: ${{ secrets.EC2_HOST }}  # Public IP of your EC2 instance
+          AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}  # AWS Account ID for ECR
+          AWS_REGION: ap-south-1  # AWS Region where ECR is located
